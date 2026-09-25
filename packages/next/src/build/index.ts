@@ -244,6 +244,7 @@ import {
 import { generateRoutesManifest } from './generate-routes-manifest'
 import { buildCustomRoute } from '../lib/build-custom-route'
 import { validateAppPaths } from './validate-app-paths'
+import { throwMissingGspErrorInStaticRoute } from '../shared/lib/errors/ensure-static-gsp-errors'
 
 type Fallback = null | boolean | string
 
@@ -2664,18 +2665,21 @@ export default async function build(
 
                           const appConfig = workerResult.appConfig || {}
                           if (appConfig.revalidate !== 0) {
+                            // TODO: this is misleading with PPR, because we'll have a
+                            // prerendered route with fallback params even without gSP
+                            // (unless we skipped fallbacks due to `ensureStatic = "navigation"`)
                             const hasGenerateStaticParams =
                               workerResult.prerenderedRoutes &&
                               workerResult.prerenderedRoutes.length > 0
-
-                            if (
-                              config.output === 'export' &&
-                              isDynamic &&
-                              !hasGenerateStaticParams
-                            ) {
-                              throw new Error(
-                                `Page "${page}" is missing "generateStaticParams()" so it cannot be used with "output: export" config. See more info here: https://nextjs.org/docs/messages/generate-static-params`
-                              )
+                            if (isDynamic && !hasGenerateStaticParams) {
+                              if (config.output === 'export') {
+                                throw new Error(
+                                  `Page "${page}" is missing "generateStaticParams()" so it cannot be used with "output: export" config. See more info here: https://nextjs.org/docs/messages/generate-static-params`
+                                )
+                              }
+                              if (isEnsureStaticPage) {
+                                throwMissingGspErrorInStaticRoute(page)
+                              }
                             }
 
                             // Mark the app as static if:

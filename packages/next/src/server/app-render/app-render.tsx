@@ -9142,6 +9142,19 @@ async function prerenderToStream(
         )
       }
 
+      const isFallbackShell = renderOpts.allowEmptyStaticShell === true
+
+      // `ensureStatic = "navigation"` currently assumes that we don't prerender fallback
+      // shells and all dynamic params are blocking. If we got here, it's a bug.
+      if (
+        ensureStaticLevel === EnsureStaticLevel.Navigation &&
+        isFallbackShell
+      ) {
+        throw new InvariantError(
+          `Route "${workStore.route}": Fallback shells should not be prerendered with \`ensureStatic = "navigation"\``
+        )
+      }
+
       /**
        * cacheComponents with PPR
        *

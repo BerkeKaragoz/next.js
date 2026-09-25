@@ -39,6 +39,10 @@ import {
 } from '../../server/app-render/work-unit-async-storage.external'
 import type { ImplicitTags } from '../../server/lib/implicit-tags'
 import { getImplicitTags } from '../../server/lib/implicit-tags'
+import {
+  throwIncompleteStaticParamsErrorInStaticRoute,
+  throwMissingGspErrorInStaticRoute,
+} from '../../shared/lib/errors/ensure-static-gsp-errors'
 
 /**
  * Filters out duplicate parameters from a list of parameters.
@@ -837,6 +841,7 @@ export async function buildAppStaticPaths({
   nextConfigOutput,
   ComponentMod,
   isRoutePPREnabled = false,
+  isEnsureStaticPage,
   buildId,
   deploymentId,
   rootParamKeys,
@@ -861,6 +866,7 @@ export async function buildAppStaticPaths({
   nextConfigOutput: 'standalone' | 'export' | undefined
   ComponentMod: AppPageModule | AppRouteModule
   isRoutePPREnabled: boolean
+  isEnsureStaticPage: boolean
   buildId: string
   deploymentId: string
   rootParamKeys: readonly string[]
@@ -982,18 +988,18 @@ export async function buildAppStaticPaths({
   }
 
   const missingParamNames: string[] = []
-  if (routeParams.length > 0) {
-    for (const { paramName } of pathnameRouteParamSegments) {
-      if (routeParams.some((params) => !(paramName in params))) {
-        missingParamNames.push(paramName)
-      }
+  for (const { paramName } of pathnameRouteParamSegments) {
+    if (
+      routeParams.length === 0 ||
+      routeParams.some((params) => !(paramName in params))
+    ) {
+      missingParamNames.push(paramName)
     }
   }
 
   // Determine if all the segments have had their parameters provided.
   const hadAllParamsGenerated =
-    pathnameRouteParamSegments.length === 0 ||
-    (routeParams.length > 0 && missingParamNames.length === 0)
+    pathnameRouteParamSegments.length === 0 || missingParamNames.length === 0
 
   if (
     nextConfigOutput === 'export' &&
@@ -1003,6 +1009,18 @@ export async function buildAppStaticPaths({
     throw new Error(
       `Page "${page}" returned incomplete params from "generateStaticParams()". With "output: export", every params object must include all dynamic route parameters. Missing: ${missingParamNames.map((name) => `"${name}"`).join(', ')}. See more info here: https://nextjs.org/docs/messages/generate-static-params`
     )
+  }
+
+  // `ensureStatic = "navigation"` currently requires all params to
+  // be prerendered via gSP.
+  if (isEnsureStaticPage && pathnameRouteParamSegments.length > 0) {
+    if (routeParams.length === 0) {
+      // In Cache Components we throw in `generateRouteStaticParams` for empty arrays,
+      // so empty `routeParams` implies that no `generateStaticParams` is present at all
+      throwMissingGspErrorInStaticRoute(page)
+    } else if (!hadAllParamsGenerated) {
+      throwIncompleteStaticParamsErrorInStaticRoute(page, missingParamNames)
+    }
   }
 
   // TODO: dynamic params should be allowed to be granular per segment but
@@ -1018,7 +1036,11 @@ export async function buildAppStaticPaths({
   const fallbackMode = dynamicParams
     ? supportsRoutePreGeneration
       ? isRoutePPREnabled
-        ? FallbackMode.PRERENDER
+        ? isEnsureStaticPage
+          ? // `ensureStatic = "navigation"` does not currently support fallbacks,
+            // so all prerenders have to be blocking.
+            FallbackMode.BLOCKING_STATIC_RENDER
+          : FallbackMode.PRERENDER
         : FallbackMode.BLOCKING_STATIC_RENDER
       : undefined
     : FallbackMode.NOT_FOUND
@@ -1031,7 +1053,11 @@ export async function buildAppStaticPaths({
   if (hadAllParamsGenerated || isRoutePPREnabled) {
     let paramsToProcess = routeParams
 
-    if (isRoutePPREnabled) {
+    if (
+      isRoutePPREnabled &&
+      // `ensureStatic = "navigation"` does not currently support fallback params.
+      !isEnsureStaticPage
+    ) {
       // Discover all unique combinations of the routeParams so we can generate
       // routes that won't throw on empty static shell for each of them if
       // they're available.
@@ -1087,7 +1113,11 @@ export async function buildAppStaticPaths({
         const paramValue = params[paramName]
 
         if (!paramValue) {
-          if (isRoutePPREnabled) {
+          if (
+            isRoutePPREnabled &&
+            // `ensureStatic = "navigation"` does not currently support fallback params.
+            !isEnsureStaticPage
+          ) {
             // Mark remaining params as fallback params.
             fallbackRouteParams.push({ paramName, paramType })
             for (

@@ -1167,6 +1167,10 @@ export function createAppPageEntrypoint({
             prerenderInfo?.fallback === null &&
             !hasOmittedConcreteFallbackParam &&
             !hasUnresolvedRootFallbackParams &&
+            // NOTE: Never true in `ensureStatic = "navigation"`, which currently
+            // disables all fallback prerenders, which means we never have anything
+            // in `remainingPrerenderableParams`. This is intentional, because we
+            // want those routes to be prerendered blockingly instead.
             remainingPrerenderableParams.length > 0
           ) {
             // Generic source shells without unresolved root params don't have a
