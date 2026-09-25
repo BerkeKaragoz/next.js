@@ -349,7 +349,7 @@ export function getLatestUpgradeVersion(
   ) {
     return null
   }
-  // Patches and consecutive canaries remain available to explicit upgrades
+  // Patches and consecutive prereleases remain available to explicit upgrades
   // without a reminder.
   if (
     semver.major(targetVersion) === semver.major(version) &&
