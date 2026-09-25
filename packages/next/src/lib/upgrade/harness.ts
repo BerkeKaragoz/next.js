@@ -1,6 +1,7 @@
 import { constants } from 'fs'
 import { access, stat } from 'fs/promises'
 import { delimiter, resolve } from 'path'
+import { createInterface } from 'readline/promises'
 
 import cliSelect from 'next/dist/compiled/cli-select'
 import spawn from 'next/dist/compiled/cross-spawn'
@@ -10,7 +11,7 @@ import { getAgentName } from '../../telemetry/agent-name'
 import { bold, cyan, dim } from '../picocolors'
 import { runChildProcess } from './run-child-process'
 
-// Model defaults for newly launched sessions; existing agents keep their model.
+// Model defaults for newly launched sessions.
 const UPGRADE_MODELS = {
   codex: 'gpt-5.6-terra',
   claude: 'claude-sonnet-5[1m]',
@@ -19,6 +20,27 @@ const UPGRADE_MODELS = {
 type UpgradeHarness = {
   name: keyof typeof UPGRADE_MODELS
   path: string
+}
+
+function withModelChoice(prompt: string): string {
+  return `${prompt}\n\nBefore upgrading, use the model and reasoning effort the user chose for this upgrade. Ask for any missing choice. If this session cannot use the chosen settings, ask the user to start a session that can.`
+}
+
+async function chooseValue(
+  question: string,
+  fallback: string
+): Promise<string> {
+  const input = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+  try {
+    return (
+      (await input.question(`${question} [${fallback}]: `)).trim() || fallback
+    )
+  } finally {
+    input.close()
+  }
 }
 
 function getHarnessDisplayName(name: UpgradeHarness['name']): string {
@@ -149,33 +171,38 @@ function copyUpgradePrompt(prompt: string, noHarness = false): void {
 function launchHarness(
   harness: UpgradeHarness,
   prompt: string,
-  directory: string
+  directory: string,
+  model: string,
+  effort: string
 ): Promise<number> {
   // Windows shell shims cannot carry literal line breaks in an argument.
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(harness.path)) {
     prompt = prompt.replace(/[\r\n]+/g, ' ')
   }
 
-  return runChildProcess(
-    harness.path,
-    ['--model', UPGRADE_MODELS[harness.name], prompt],
-    { cwd: directory, stdio: 'inherit' }
-  )
+  const args =
+    harness.name === 'codex'
+      ? ['--model', model, '-c', `model_reasoning_effort=${effort}`, prompt]
+      : ['--model', model, '--effort', effort, prompt]
+  return runChildProcess(harness.path, args, {
+    cwd: directory,
+    stdio: 'inherit',
+  })
 }
 
 export async function handoffUpgrade(
   prompt: string,
   directory: string
 ): Promise<void> {
-  // Existing agents keep their session, model and permissions.
+  // Existing agents keep their session and permissions.
   if (await getAgentName()) {
-    Log.bootstrap(prompt)
+    Log.bootstrap(withModelChoice(prompt))
     return
   }
 
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     Log.info('Copy this upgrade prompt into your coding agent:')
-    Log.bootstrap(prompt)
+    Log.bootstrap(withModelChoice(prompt))
     return
   }
 
@@ -183,7 +210,7 @@ export async function handoffUpgrade(
   const installed = await findHarnesses()
 
   if (installed.length === 0) {
-    copyUpgradePrompt(prompt, true)
+    copyUpgradePrompt(withModelChoice(prompt), true)
     return
   }
 
@@ -191,7 +218,7 @@ export async function handoffUpgrade(
   const harness = await chooseHarness(installed)
 
   if (harness === 'copy') {
-    copyUpgradePrompt(prompt)
+    copyUpgradePrompt(withModelChoice(prompt))
     return
   }
 
@@ -201,11 +228,31 @@ export async function handoffUpgrade(
     return
   }
 
+  const model = await chooseValue(
+    'Model for this upgrade',
+    UPGRADE_MODELS[harness.name]
+  )
+  const effort = await chooseValue(
+    'Reasoning effort (low, medium, high, xhigh)',
+    'high'
+  )
+  if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) {
+    Log.error('Reasoning effort must be low, medium, high, or xhigh.')
+    process.exitCode = 1
+    return
+  }
+
   Log.bootstrap(
     `  Continuing with ${cyan(bold(getHarnessDisplayName(harness.name)))}...\n`
   )
   try {
-    process.exitCode = await launchHarness(harness, prompt, directory)
+    process.exitCode = await launchHarness(
+      harness,
+      prompt,
+      directory,
+      model,
+      effort
+    )
   } catch {
     Log.error(`Could not start ${getHarnessDisplayName(harness.name)}.`)
     process.exitCode = 1

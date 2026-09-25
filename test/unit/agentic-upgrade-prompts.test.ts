@@ -72,9 +72,14 @@ jest.mock('next/dist/server/config-shared', () => ({
 jest.mock('next/dist/telemetry/agent-name', () => ({
   getAgentName: jest.fn(),
 }))
+jest.mock('readline/promises', () => ({
+  createInterface: jest.fn(() => ({ question: jest.fn(), close: jest.fn() })),
+}))
 
 const createSpinner = require('next/dist/build/spinner').default as jest.Mock
 const crossSpawn = require('next/dist/compiled/cross-spawn') as jest.Mock
+const createInterface = require('readline/promises')
+  .createInterface as jest.Mock
 const cliVersion: string = require('next/package.json').version
 const restoreDescriptors: Array<() => void> = []
 
@@ -130,6 +135,7 @@ describe('agentic upgrade prompts', () => {
 
   beforeEach(() => {
     jest.resetAllMocks()
+    createInterface.mockReturnValue({ question: jest.fn(), close: jest.fn() })
     process.env.__NEXT_UPGRADE_USE_CURRENT_CLI = '1'
     process.env.__NEXT_UPGRADE_EXPECTED_CLI_VERSION = cliVersion
     global.fetch = jest.fn()
@@ -437,6 +443,51 @@ describe('agentic upgrade prompts', () => {
     )
   })
 
+  it.each([
+    [
+      'codex',
+      ['--model', 'custom-codex', '-c', 'model_reasoning_effort=xhigh'],
+    ],
+    ['claude', ['--model', 'custom-claude', '--effort', 'xhigh']],
+  ])('passes selected model and effort to %s', async (agent, flags) => {
+    process.env.PATH = '/agents'
+    overrideTTY(process.stdin)
+    overrideTTY(process.stdout)
+    jest.mocked(getAgentName).mockResolvedValue(null)
+    jest.mocked(access).mockResolvedValue(undefined)
+    jest.mocked(stat).mockResolvedValue({ isFile: () => true } as never)
+    jest.mocked(cliSelect).mockResolvedValue({ id: agent } as never)
+    const question = jest
+      .fn()
+      .mockResolvedValueOnce(`custom-${agent}`)
+      .mockResolvedValueOnce('xhigh')
+    createInterface.mockReturnValue({ question, close: jest.fn() })
+    crossSpawn.mockImplementation(() => {
+      const child = new EventEmitter()
+      process.nextTick(() => child.emit('close', 0, null))
+      return child
+    })
+
+    await handoffUpgrade('Prepared upgrade prompt.', '/workspace/app')
+
+    expect(crossSpawn).toHaveBeenCalledWith(
+      `/agents/${agent}`,
+      [...flags, 'Prepared upgrade prompt.'],
+      { cwd: '/workspace/app', stdio: 'inherit' }
+    )
+    expect(question).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks an existing agent for missing model and effort choices', async () => {
+    await handoffUpgrade('Prepared upgrade prompt.', '/workspace/app')
+
+    expect(Log.bootstrap).toHaveBeenCalledWith(
+      expect.stringContaining('Ask for any missing choice')
+    )
+    expect(createInterface).toHaveBeenCalledTimes(0)
+    expect(crossSpawn).toHaveBeenCalledTimes(0)
+  })
+
   it('passes the complete migration prompt to an existing agent', async () => {
     await spawnNextUpgrade('/workspace/app', {
       revision: 'latest',
@@ -480,7 +531,9 @@ describe('agentic upgrade prompts', () => {
 
      References:
      - https://api.github.com/advisories?affects=next
-     - https://registry.npmjs.org/next",
+     - https://registry.npmjs.org/next
+
+     Before upgrading, use the model and reasoning effort the user chose for this upgrade. Ask for any missing choice. If this session cannot use the chosen settings, ask the user to start a session that can.",
        ],
      ]
     `)
@@ -576,7 +629,9 @@ describe('agentic upgrade prompts', () => {
      Set \`experimental.agenticAutoUpgrade\` to "latest" in the app's Next.js config as part of this upgrade. Preserve unrelated configuration. If the target Next.js version does not support this option, skip the setting and report why.
 
      References:
-     - https://registry.npmjs.org/next/latest",
+     - https://registry.npmjs.org/next/latest
+
+     Before upgrading, use the model and reasoning effort the user chose for this upgrade. Ask for any missing choice. If this session cannot use the chosen settings, ask the user to start a session that can.",
        ],
      ]
     `)
@@ -792,7 +847,9 @@ describe('agentic upgrade prompts', () => {
      Complete each adoption. Temporary opt-outs and TODO markers are intermediate work only; do not stop until they are removed and the adoption is fully verified.
 
      References:
-     - https://registry.npmjs.org/next/latest",
+     - https://registry.npmjs.org/next/latest
+
+     Before upgrading, use the model and reasoning effort the user chose for this upgrade. Ask for any missing choice. If this session cannot use the chosen settings, ask the user to start a session that can.",
          ],
        ],
        "savedInstructions": [
@@ -890,7 +947,9 @@ describe('agentic upgrade prompts', () => {
      Complete each adoption. Temporary opt-outs and TODO markers are intermediate work only; do not stop until they are removed and the adoption is fully verified.
 
      References:
-     - https://registry.npmjs.org/next/latest",
+     - https://registry.npmjs.org/next/latest
+
+     Before upgrading, use the model and reasoning effort the user chose for this upgrade. Ask for any missing choice. If this session cannot use the chosen settings, ask the user to start a session that can.",
        ],
      ]
     `)
